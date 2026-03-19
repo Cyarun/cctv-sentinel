@@ -792,13 +792,17 @@
     updateCameraTimes();
     setInterval(updateCameraTimes, 1000);
 
-    // Refresh camera snapshots every 2 seconds
+    // Refresh camera snapshots with double-buffering (no flicker)
     setInterval(() => {
       cameras.forEach((cam) => {
-        const img = document.getElementById('feed-' + cam.id);
-        if (img && cam.enabled) {
-          img.src = '/api/snapshot/' + cam.channel + '?t=' + Date.now();
-        }
+        if (!cam.enabled) return;
+        const visible = document.getElementById('feed-' + cam.id);
+        if (!visible) return;
+        const loader = new Image();
+        loader.onload = function() {
+          visible.src = this.src;
+        };
+        loader.src = '/api/snapshot/' + cam.channel + '?t=' + Date.now();
       });
     }, 2000);
   }
