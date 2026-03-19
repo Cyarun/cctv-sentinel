@@ -871,7 +871,7 @@
         <div class="cam-status">
           <span class="indicator-dot ${cam.enabled ? 'green' : 'red'}"></span>
         </div>
-        <img class="cam-feed" id="feed-${cam.id}" src="/api/mjpeg/${cam.channel}"
+        <img class="cam-feed" id="feed-${cam.id}" src="/api/snapshot/${cam.channel}"
              style="width:100%;height:100%;object-fit:cover;display:block;"
              onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
              onload="this.style.display='block';this.nextElementSibling.style.display='none';">
@@ -892,6 +892,26 @@
 
     updateCameraTimes();
     setInterval(updateCameraTimes, 1000);
+
+    // Staggered snapshot refresh — each camera loads independently, no flicker
+    cameras.forEach((cam, index) => {
+      if (!cam.enabled) return;
+      setTimeout(() => refreshCamera(cam), index * 300);
+    });
+
+    function refreshCamera(cam) {
+      const img = document.getElementById('feed-' + cam.id);
+      if (!img) return;
+      const loader = new Image();
+      loader.onload = function() {
+        img.src = this.src;
+        setTimeout(() => refreshCamera(cam), 500);
+      };
+      loader.onerror = function() {
+        setTimeout(() => refreshCamera(cam), 2000);
+      };
+      loader.src = '/api/snapshot/' + cam.channel + '?t=' + Date.now();
+    }
   }
 
   function updateCameraTimes() {
