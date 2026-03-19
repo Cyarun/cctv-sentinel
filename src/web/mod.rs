@@ -295,31 +295,86 @@ pub async fn mjpeg_handler(
   let dvr = state.config.dvr.clone();
   let boundary = "cctvsentinelframe";
 
-  let stream = async_stream::stream! {
-    loop {
-      let output = tokio::process::Command::new("curl")
-        .args(["-s", "--digest", "-u",
-               &format!("{}:{}", dvr.username, dvr.password),
-               "-m", "5",
-               &format!("http://{}/ISAPI/Streaming/channels/{}/picture", dvr.ip, channel)])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await;
+  // Use ffmpeg to continuously decode RTSP sub-stream to MJPEG frames
+  let sub_channel = channel + 1; // sub-stream
+  let rtsp_url = format!(
+    "rtsp://{}:{}@{}:554/Streaming/Channels/{}",
+    dvr.username, dvr.password, dvr.ip, sub_channel
+  );
 
-      if let Ok(out) = output {
-        if out.status.success() && out.stdout.len() > 1000 {
-          let frame = format!(
-            "--{}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-            boundary, out.stdout.len()
-          );
-          yield Ok::<_, std::io::Error>(bytes::Bytes::from(frame));
-          yield Ok(bytes::Bytes::from(out.stdout));
-          yield Ok(bytes::Bytes::from("\r\n"));
+  let stream = async_stream::stream! {
+    // Spawn ONE persistent ffmpeg process that outputs continuous JPEG frames
+    let mut child = match tokio::process::Command::new("ffmpeg")
+      .args(["-rtsp_transport", "tcp", "-stimeout", "5000000",
+             "-i", &rtsp_url,
+             "-vf", "fps=2",
+             "-f", "image2pipe", "-vcodec", "mjpeg",
+             "-q:v", "8",
+             "-"])
+      .stdout(std::process::Stdio::piped())
+      .stderr(std::process::Stdio::null())
+      .spawn()
+    {
+      Ok(c) => c,
+      Err(_) => return,
+    };
+
+    let stdout = match child.stdout.take() {
+      Some(s) => s,
+      None => return,
+    };
+
+    use tokio::io::AsyncReadExt;
+    let mut reader = tokio::io::BufReader::new(stdout);
+    let mut buf = vec![0u8; 512 * 1024]; // 512KB buffer
+
+    loop {
+      // Read JPEG frames from ffmpeg pipe
+      // JPEG starts with FF D8, ends with FF D9
+      let mut frame_data = Vec::new();
+      let mut found_start = false;
+
+      loop {
+        let n = match reader.read(&mut buf).await {
+          Ok(0) => break, // EOF
+          Ok(n) => n,
+          Err(_) => break,
+        };
+
+        for i in 0..n {
+          if !found_start {
+            if i + 1 < n && buf[i] == 0xFF && buf[i + 1] == 0xD8 {
+              found_start = true;
+              frame_data.clear();
+              frame_data.push(buf[i]);
+            }
+          } else {
+            frame_data.push(buf[i]);
+            if frame_data.len() >= 2
+              && frame_data[frame_data.len() - 2] == 0xFF
+              && frame_data[frame_data.len() - 1] == 0xD9
+            {
+              // Complete JPEG frame
+              let header = format!(
+                "--{}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                boundary, frame_data.len()
+              );
+              yield Ok::<_, std::io::Error>(bytes::Bytes::from(header));
+              yield Ok(bytes::Bytes::from(frame_data.clone()));
+              yield Ok(bytes::Bytes::from("\r\n"));
+              found_start = false;
+              frame_data.clear();
+            }
+          }
+        }
+
+        if !found_start && frame_data.is_empty() {
+          continue;
         }
       }
-      tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
+
+    let _ = child.kill().await;
   };
 
   let body = Body::from_stream(stream);
