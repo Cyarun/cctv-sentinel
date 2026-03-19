@@ -303,12 +303,12 @@ pub async fn snapshot_handler(
     dvr.ip, channel
   );
 
-  // Use ffmpeg to grab snapshot (handles digest auth natively)
-  let output = tokio::process::Command::new("ffmpeg")
-    .args(["-y", "-rtsp_transport", "tcp", "-stimeout", "3000000",
-           "-i", &format!("rtsp://{}:{}@{}:554/Streaming/Channels/{}",
-                          dvr.username, dvr.password, dvr.ip, channel),
-           "-frames:v", "1", "-f", "image2", "-q:v", "5", "pipe:1"])
+  // Use curl with digest auth to grab ISAPI snapshot
+  let output = tokio::process::Command::new("curl")
+    .args(["-s", "--digest", "-u",
+           &format!("{}:{}", dvr.username, dvr.password),
+           "-m", "5",
+           &format!("http://{}/ISAPI/Streaming/channels/{}/picture", dvr.ip, channel)])
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::null())
     .output()
@@ -317,7 +317,7 @@ pub async fn snapshot_handler(
   match output
   {
     Ok(out) => {
-      if out.status.success() && !out.stdout.is_empty() {
+      if out.status.success() && out.stdout.len() > 1000 {
         (
           StatusCode::OK,
           [(header::CONTENT_TYPE, "image/jpeg"),
