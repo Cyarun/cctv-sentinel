@@ -307,9 +307,9 @@ pub async fn mjpeg_handler(
     let mut child = match tokio::process::Command::new("ffmpeg")
       .args(["-rtsp_transport", "tcp", "-stimeout", "5000000",
              "-i", &rtsp_url,
-             "-vf", "fps=2",
+             "-vf", "fps=8",
              "-f", "image2pipe", "-vcodec", "mjpeg",
-             "-q:v", "8",
+             "-q:v", "5",
              "-"])
       .stdout(std::process::Stdio::piped())
       .stderr(std::process::Stdio::null())
