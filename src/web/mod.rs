@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
+use std::sync::atomic::Ordering;
 use crate::AppState;
 
 // --- Data types ---
@@ -349,10 +350,6 @@ pub async fn snapshot_handler(
   State(state): State<Arc<AppState>>,
 ) -> Response {
   let dvr = &state.config.dvr;
-  let url = format!(
-    "http://{}/ISAPI/Streaming/channels/{}/picture",
-    dvr.ip, channel
-  );
 
   // Use curl with digest auth to grab ISAPI snapshot
   let output = tokio::process::Command::new("curl")
@@ -383,5 +380,408 @@ pub async fn snapshot_handler(
       tracing::error!("Snapshot failed for channel {}: {}", channel, e);
       StatusCode::BAD_GATEWAY.into_response()
     }
+  }
+}
+
+// --- Detection API ---
+
+/// Grab a snapshot from the DVR and run YOLO inference, returning JSON detections.
+pub async fn detect_handler(
+  Path(channel): Path<u16>,
+  State(state): State<Arc<AppState>>,
+  headers: HeaderMap,
+) -> Response {
+  if let Err(status) = auth_check(&headers, &state) {
+    return (status, Json(ApiError { error: "Unauthorized".into() })).into_response();
+  }
+
+  let dvr = &state.config.dvr;
+  let conf_threshold = state.config.detection.confidence_threshold;
+  let model_path = state.config.detection.model_path.clone();
+
+  // 1. Grab snapshot via curl (ISAPI HTTP, reliable digest auth)
+  let snapshot = tokio::process::Command::new("curl")
+    .args(["-s", "--digest", "-u",
+           &format!("{}:{}", dvr.username, dvr.password),
+           "-m", "5",
+           &format!("http://{}/ISAPI/Streaming/channels/{}/picture", dvr.ip, channel)])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .output()
+    .await;
+
+  let jpeg_bytes = match snapshot {
+    Ok(out) if out.status.success() && out.stdout.len() > 1000 => out.stdout,
+    _ => {
+      return (
+        StatusCode::BAD_GATEWAY,
+        Json(ApiError { error: format!("Failed to grab snapshot from channel {}", channel) }),
+      ).into_response();
+    }
+  };
+
+  // 2. Write JPEG to temp file, decode to raw RGB via Python, run inference
+  let tmp_dir = std::env::temp_dir().join("cctv-sentinel");
+  let _ = std::fs::create_dir_all(&tmp_dir);
+  let ts = chrono::Utc::now().timestamp_millis();
+  let jpeg_path = tmp_dir.join(format!("snap_{}_{}.jpg", channel, ts));
+  if std::fs::write(&jpeg_path, &jpeg_bytes).is_err() {
+    return (
+      StatusCode::INTERNAL_SERVER_ERROR,
+      Json(ApiError { error: "Failed to write temp snapshot".into() }),
+    ).into_response();
+  }
+
+  // Use the inference_jpeg.py wrapper that handles JPEG input directly
+  let script_path = std::path::Path::new("src/detector/inference_jpeg.py");
+  let effective_model = if std::path::Path::new(&model_path).exists() {
+    model_path
+  } else {
+    "/opt/cctvanalytics/models/yolo26n_cctv/bestv4.onnx".to_string()
+  };
+
+  let output = tokio::process::Command::new("python3")
+    .args([
+      script_path.to_str().unwrap_or("src/detector/inference_jpeg.py"),
+      jpeg_path.to_str().unwrap_or(""),
+      &effective_model,
+      "352",  // model input size
+      &conf_threshold.to_string(),
+    ])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .output()
+    .await;
+
+  // Clean up temp file
+  let _ = std::fs::remove_file(&jpeg_path);
+
+  match output {
+    Ok(out) => {
+      if out.status.success() {
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        // Return the raw JSON array from inference
+        (
+          StatusCode::OK,
+          [(header::CONTENT_TYPE, "application/json")],
+          stdout.trim().to_string(),
+        ).into_response()
+      } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        tracing::error!("Detection failed for channel {}: {}", channel, stderr);
+        (
+          StatusCode::INTERNAL_SERVER_ERROR,
+          Json(ApiError { error: format!("Inference failed: {}", stderr.trim()) }),
+        ).into_response()
+      }
+    }
+    Err(e) => {
+      tracing::error!("Failed to spawn inference: {}", e);
+      (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiError { error: "Failed to run detection".into() }),
+      ).into_response()
+    }
+  }
+}
+
+/// Start the background detection loop that runs YOLO round-robin on all cameras.
+pub async fn detect_start_handler(
+  State(state): State<Arc<AppState>>,
+  headers: HeaderMap,
+) -> Response {
+  if let Err(status) = auth_check(&headers, &state) {
+    return (status, Json(ApiError { error: "Unauthorized".into() })).into_response();
+  }
+
+  // Check if already running
+  if state.detection_running.load(Ordering::SeqCst) {
+    return Json(serde_json::json!({
+      "status": "already_running",
+      "message": "Detection loop is already active"
+    })).into_response();
+  }
+
+  state.detection_running.store(true, Ordering::SeqCst);
+
+  let state_clone = state.clone();
+  tokio::spawn(async move {
+    detection_loop(state_clone).await;
+  });
+
+  Json(serde_json::json!({
+    "status": "started",
+    "message": "Detection loop started"
+  })).into_response()
+}
+
+/// Stop the background detection loop.
+pub async fn detect_stop_handler(
+  State(state): State<Arc<AppState>>,
+  headers: HeaderMap,
+) -> Response {
+  if let Err(status) = auth_check(&headers, &state) {
+    return (status, Json(ApiError { error: "Unauthorized".into() })).into_response();
+  }
+
+  state.detection_running.store(false, Ordering::SeqCst);
+
+  Json(serde_json::json!({
+    "status": "stopped",
+    "message": "Detection loop will stop after current cycle"
+  })).into_response()
+}
+
+/// Get detection loop status.
+pub async fn detect_status_handler(
+  State(state): State<Arc<AppState>>,
+  headers: HeaderMap,
+) -> Response {
+  if let Err(status) = auth_check(&headers, &state) {
+    return (status, Json(ApiError { error: "Unauthorized".into() })).into_response();
+  }
+
+  let running = state.detection_running.load(Ordering::SeqCst);
+  Json(serde_json::json!({
+    "running": running
+  })).into_response()
+}
+
+/// Background detection loop: round-robin YOLO on all enabled cameras.
+/// Grabs snapshot, runs inference, broadcasts detections via WebSocket, stores in SQLite.
+async fn detection_loop(state: Arc<AppState>) {
+  tracing::info!("Detection loop started");
+
+  // Simple centroid tracker state per camera: track_id -> {class, positions, first_seen}
+  let mut tracker_state: std::collections::HashMap<u32, std::collections::HashMap<u32, TrackerEntry>> =
+    std::collections::HashMap::new();
+  let mut next_track_id: u32 = 1;
+
+  loop {
+    if !state.detection_running.load(Ordering::SeqCst) {
+      tracing::info!("Detection loop stopped");
+      break;
+    }
+
+    let cameras = state.config.cameras.clone();
+    let dvr = state.config.dvr.clone();
+    let conf_threshold = state.config.detection.confidence_threshold;
+    let model_path = state.config.detection.model_path.clone();
+
+    for cam in &cameras {
+      if !cam.enabled {
+        continue;
+      }
+      if !state.detection_running.load(Ordering::SeqCst) {
+        break;
+      }
+
+      let channel = cam.channel;
+      let cam_name = cam.name.clone();
+      let cam_id = cam.id;
+
+      // 1. Grab snapshot
+      let snapshot = tokio::process::Command::new("curl")
+        .args(["-s", "--digest", "-u",
+               &format!("{}:{}", dvr.username, dvr.password),
+               "-m", "3",
+               &format!("http://{}/ISAPI/Streaming/channels/{}/picture", dvr.ip, channel)])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+
+      let jpeg_bytes = match snapshot {
+        Ok(out) if out.status.success() && out.stdout.len() > 1000 => out.stdout,
+        _ => {
+          tracing::warn!("Snapshot grab failed for camera {} (ch {})", cam_id, channel);
+          continue;
+        }
+      };
+
+      // 2. Write to temp, run inference
+      let tmp_dir = std::env::temp_dir().join("cctv-sentinel");
+      let _ = std::fs::create_dir_all(&tmp_dir);
+      let ts = chrono::Utc::now().timestamp_millis();
+      let jpeg_path = tmp_dir.join(format!("det_{}_{}.jpg", channel, ts));
+      if std::fs::write(&jpeg_path, &jpeg_bytes).is_err() {
+        continue;
+      }
+
+      let effective_model = if std::path::Path::new(&model_path).exists() {
+        model_path.clone()
+      } else {
+        "/opt/cctvanalytics/models/yolo26n_cctv/bestv4.onnx".to_string()
+      };
+
+      let output = tokio::process::Command::new("python3")
+        .args([
+          "src/detector/inference_jpeg.py",
+          jpeg_path.to_str().unwrap_or(""),
+          &effective_model,
+          "352",
+          &conf_threshold.to_string(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+
+      let _ = std::fs::remove_file(&jpeg_path);
+
+      let detections: Vec<serde_json::Value> = match output {
+        Ok(out) if out.status.success() => {
+          let stdout = String::from_utf8_lossy(&out.stdout);
+          serde_json::from_str(stdout.trim()).unwrap_or_default()
+        }
+        _ => continue,
+      };
+
+      if detections.is_empty() {
+        // Broadcast empty detection to clear overlays
+        let empty_msg = serde_json::json!({
+          "type": "detection",
+          "camera": channel,
+          "camera_id": cam_id,
+          "camera_name": cam_name,
+          "timestamp": chrono::Utc::now().to_rfc3339(),
+          "objects": []
+        });
+        let _ = state.event_tx.send(empty_msg.to_string());
+        continue;
+      }
+
+      // 3. Simple centroid tracking: match detections to existing tracks
+      let cam_tracks = tracker_state.entry(cam_id).or_insert_with(std::collections::HashMap::new);
+      let now = chrono::Utc::now();
+      let mut matched_track_ids: Vec<u32> = Vec::new();
+      let mut objects: Vec<serde_json::Value> = Vec::new();
+
+      for det in &detections {
+        let class = det.get("class").and_then(|c| c.as_str()).unwrap_or("unknown");
+        let conf = det.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0);
+        let x = det.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y = det.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let w = det.get("w").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let h = det.get("h").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+        // Find closest existing track of same class
+        let mut best_tid: Option<u32> = None;
+        let mut best_dist = 0.15_f64; // max match distance
+        for (&tid, entry) in cam_tracks.iter() {
+          if matched_track_ids.contains(&tid) { continue; }
+          if entry.class != class { continue; }
+          let (lx, ly) = entry.last_pos();
+          let dist = ((x - lx).powi(2) + (y - ly).powi(2)).sqrt();
+          if dist < best_dist {
+            best_dist = dist;
+            best_tid = Some(tid);
+          }
+        }
+
+        let track_id = if let Some(tid) = best_tid {
+          matched_track_ids.push(tid);
+          let entry = cam_tracks.get_mut(&tid).unwrap();
+          entry.positions.push((x, y));
+          if entry.positions.len() > 10 {
+            entry.positions.remove(0);
+          }
+          entry.last_seen = now;
+          tid
+        } else {
+          let tid = next_track_id;
+          next_track_id += 1;
+          cam_tracks.insert(tid, TrackerEntry {
+            class: class.to_string(),
+            positions: vec![(x, y)],
+            first_seen: now,
+            last_seen: now,
+          });
+          tid
+        };
+
+        let entry = &cam_tracks[&track_id];
+        let trail: Vec<Vec<f64>> = entry.positions.iter().map(|&(px, py)| vec![px, py]).collect();
+        let duration_s = (now - entry.first_seen).num_milliseconds() as f64 / 1000.0;
+
+        // Simple intent classification based on motion
+        let intent = if entry.positions.len() >= 3 {
+          let (fx, fy) = entry.positions[0];
+          let dy_total = y - fy;
+          let dx_total = x - fx;
+          if dy_total > 0.05 && y > 0.6 {
+            "approaching_gate"
+          } else if dx_total.abs() > dy_total.abs() * 2.0 && (dx_total.abs() > 0.08) {
+            "passing"
+          } else if (dx_total.abs() < 0.02) && (dy_total.abs() < 0.02) {
+            "stationary"
+          } else {
+            "moving"
+          }
+        } else {
+          "unknown"
+        };
+
+        objects.push(serde_json::json!({
+          "class": class,
+          "confidence": conf,
+          "x": x,
+          "y": y,
+          "w": w,
+          "h": h,
+          "track_id": track_id,
+          "trail": trail,
+          "intent": intent,
+          "duration_s": duration_s,
+        }));
+
+        // Store event in SQLite
+        let event_id = uuid::Uuid::new_v4().to_string();
+        let timestamp = now.to_rfc3339();
+        if let Ok(db) = state.db.lock() {
+          let _ = db.execute(
+            "INSERT OR IGNORE INTO events (id, camera_id, camera_name, timestamp, object_label, confidence, bbox_x, bbox_y, bbox_w, bbox_h) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![event_id, cam_id, cam_name, timestamp, class, conf, x, y, w, h],
+          );
+        }
+      }
+
+      // Prune stale tracks (not seen in last 10 seconds)
+      cam_tracks.retain(|_, entry| {
+        (now - entry.last_seen).num_seconds() < 10
+      });
+
+      // 4. Broadcast detection event via WebSocket
+      let ws_msg = serde_json::json!({
+        "type": "detection",
+        "camera": channel,
+        "camera_id": cam_id,
+        "camera_name": cam_name,
+        "timestamp": now.to_rfc3339(),
+        "objects": objects,
+      });
+      let _ = state.event_tx.send(ws_msg.to_string());
+
+      // ~130ms pause between cameras
+      tokio::time::sleep(std::time::Duration::from_millis(130)).await;
+    }
+
+    // Small pause between full rounds
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+  }
+}
+
+/// Internal tracker entry for the detection loop's simple centroid tracker.
+struct TrackerEntry {
+  class: String,
+  positions: Vec<(f64, f64)>,
+  first_seen: chrono::DateTime<chrono::Utc>,
+  last_seen: chrono::DateTime<chrono::Utc>,
+}
+
+impl TrackerEntry {
+  fn last_pos(&self) -> (f64, f64) {
+    self.positions.last().copied().unwrap_or((0.0, 0.0))
   }
 }

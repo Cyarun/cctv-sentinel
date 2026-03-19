@@ -12,6 +12,7 @@ use axum::{
 use config::AppConfig;
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
 use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -20,6 +21,7 @@ pub struct AppState {
   pub config: AppConfig,
   pub db: Mutex<Connection>,
   pub event_tx: broadcast::Sender<String>,
+  pub detection_running: AtomicBool,
 }
 
 fn init_database(db: &Connection) {
@@ -98,6 +100,7 @@ async fn main() {
     config,
     db: Mutex::new(db),
     event_tx,
+    detection_running: AtomicBool::new(false),
   });
 
   // Build router
@@ -115,6 +118,11 @@ async fn main() {
     // Camera feeds
     .route("/api/snapshot/:channel", get(web::snapshot_handler))
     .route("/api/mjpeg/:channel", get(web::mjpeg_handler))
+    // Detection
+    .route("/api/detect/:channel", get(web::detect_handler))
+    .route("/api/detect/start", post(web::detect_start_handler))
+    .route("/api/detect/stop", post(web::detect_stop_handler))
+    .route("/api/detect/status", get(web::detect_status_handler))
     // WebSocket
     .route("/ws", get(web::ws_handler))
     // Static files

@@ -288,23 +288,87 @@
     color: var(--text-dim);
   }
 
-  /* Detection overlay */
-  .detection-box {
+  /* Detection canvas overlay */
+  .detection-canvas {
     position: absolute;
-    border: 1px solid var(--green);
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
     z-index: 3;
     pointer-events: none;
   }
 
-  .detection-label {
-    position: absolute;
-    top: -16px;
-    left: 0;
-    background: rgba(0, 255, 65, 0.15);
-    color: var(--green);
+  /* AI toggle button on camera tiles */
+  .ai-toggle {
+    display: inline-block;
+    padding: 1px 5px;
     font-size: 8px;
-    padding: 1px 4px;
-    white-space: nowrap;
+    font-family: var(--mono);
+    letter-spacing: 1px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    pointer-events: auto;
+    z-index: 5;
+    margin-left: 6px;
+    text-transform: uppercase;
+    transition: all 0.2s;
+  }
+
+  .ai-toggle.active {
+    background: rgba(0, 255, 65, 0.15);
+    border-color: var(--green-dim);
+    color: var(--green);
+    box-shadow: 0 0 4px rgba(0, 255, 65, 0.3);
+  }
+
+  .ai-toggle:hover {
+    border-color: var(--green-dim);
+    color: var(--green);
+  }
+
+  /* Master AI toggle in top bar */
+  .ai-master-toggle {
+    padding: 2px 8px;
+    font-size: 10px;
+    font-family: var(--mono);
+    letter-spacing: 2px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: all 0.2s;
+  }
+
+  .ai-master-toggle.active {
+    background: rgba(0, 255, 65, 0.15);
+    border-color: var(--green-dim);
+    color: var(--green);
+    box-shadow: 0 0 6px rgba(0, 255, 65, 0.3);
+  }
+
+  .ai-master-toggle:hover {
+    border-color: var(--green-dim);
+    color: var(--green);
+  }
+
+  /* Fullscreen detection details */
+  .fullscreen-detection-info {
+    position: absolute;
+    bottom: 40px;
+    left: 8px;
+    z-index: 10;
+    font-size: 9px;
+    color: var(--text);
+    pointer-events: none;
+  }
+
+  .fullscreen-detection-info .det-item {
+    margin-bottom: 2px;
+    color: var(--amber);
   }
 
   /* Alert Panel */
@@ -583,6 +647,7 @@
     <span class="brand">CCTV Sentinel</span>
     <div class="status-indicators">
       <span><span class="indicator-dot green" id="ws-indicator"></span> LIVE FEED</span>
+      <button class="ai-master-toggle" id="ai-master-toggle" onclick="toggleMasterAI()">AI OFF</button>
       <span><span class="indicator-dot green"></span> DVR LINK</span>
       <span class="rec-indicator">&#x25CF; REC</span>
     </div>
@@ -659,7 +724,9 @@
 <div class="scanline"></div>
 
 <script>
+  // =========================================================================
   // State
+  // =========================================================================
   let token = localStorage.getItem('sentinel_token') || '';
   let ws = null;
   let cameras = [];
@@ -668,12 +735,34 @@
   let startTime = Date.now();
   let fullscreenCam = null;
 
+  // AI overlay state
+  let aiMasterEnabled = false;
+  let aiPerCamera = {};         // cam.id -> bool
+  let cameraDetections = {};    // cam.id -> {objects: [], timestamp}
+  let animFrameId = null;
+
+  // Color map for object classes
+  const CLASS_COLORS = {
+    person: '#ff2d2d',
+    car: '#4488ff',
+    motorcycle: '#ffdd00',
+    auto_rickshaw: '#ff8800',
+    dog: '#00cc44',
+    cat: '#aa44ff',
+    cow: '#cc8844',
+    bicycle: '#44cccc',
+    truck: '#8888ff',
+    bus: '#ff44aa',
+  };
+
   // Boot
   if (token) {
     showDashboard();
   }
 
-  // --- Auth ---
+  // =========================================================================
+  // Auth
+  // =========================================================================
 
   async function doLogin() {
     const user = document.getElementById('login-user').value;
@@ -707,11 +796,14 @@
     token = '';
     localStorage.removeItem('sentinel_token');
     if (ws) ws.close();
+    if (animFrameId) cancelAnimationFrame(animFrameId);
     document.getElementById('dashboard').classList.remove('active');
     document.getElementById('login-screen').classList.remove('hidden');
   }
 
-  // --- Dashboard ---
+  // =========================================================================
+  // Dashboard
+  // =========================================================================
 
   async function showDashboard() {
     document.getElementById('login-screen').classList.add('hidden');
@@ -723,6 +815,7 @@
     connectWebSocket();
     startUptimeTicker();
     startStatsTicker();
+    startOverlayRenderLoop();
   }
 
   async function loadCameras() {
@@ -761,21 +854,29 @@
       const tile = document.createElement('div');
       tile.className = 'camera-tile';
       tile.id = 'cam-' + cam.id;
-      tile.onclick = () => toggleFullscreen(cam.id);
+      tile.onclick = (e) => {
+        // Don't toggle fullscreen if clicking AI toggle button
+        if (e.target.classList.contains('ai-toggle')) return;
+        toggleFullscreen(cam.id);
+      };
 
       tile.innerHTML = `
         <div class="cam-header">
           <span class="cam-name">${cam.name}</span>
-          <span class="cam-channel">CH${cam.channel}</span>
+          <span class="cam-channel">CH${cam.channel}
+            <button class="ai-toggle" id="ai-btn-${cam.id}"
+                    onclick="event.stopPropagation(); toggleCameraAI(${cam.id})">AI</button>
+          </span>
         </div>
         <div class="cam-status">
           <span class="indicator-dot ${cam.enabled ? 'green' : 'red'}"></span>
         </div>
         <img class="cam-feed" id="feed-${cam.id}" src="/api/mjpeg/${cam.channel}"
-             style="width:100%;height:calc(100% - 50px);object-fit:cover;display:block;"
+             style="width:100%;height:100%;object-fit:cover;display:block;"
              onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
              onload="this.style.display='block';this.nextElementSibling.style.display='none';">
         <span class="no-signal" style="display:none;">${cam.enabled ? 'AWAITING FEED' : 'OFFLINE'}</span>
+        <canvas class="detection-canvas" id="canvas-${cam.id}"></canvas>
         <div class="cam-footer">
           <span class="detection-count" id="det-count-${cam.id}">0 objects</span>
           <span class="cam-time" id="cam-time-${cam.id}">--:--:--</span>
@@ -783,16 +884,14 @@
       `;
 
       grid.appendChild(tile);
+      aiPerCamera[cam.id] = false;
     });
 
     document.getElementById('stat-cameras').textContent =
       cameras.filter(c => c.enabled).length + '/' + cameras.length;
 
-    // Update camera timestamps
     updateCameraTimes();
     setInterval(updateCameraTimes, 1000);
-
-    // MJPEG streams — no polling needed, browser handles natively
   }
 
   function updateCameraTimes() {
@@ -812,7 +911,6 @@
       tile.classList.remove('fullscreen');
       fullscreenCam = null;
     } else {
-      // Remove existing fullscreen
       if (fullscreenCam !== null) {
         const prev = document.getElementById('cam-' + fullscreenCam);
         if (prev) prev.classList.remove('fullscreen');
@@ -820,18 +918,347 @@
       tile.classList.add('fullscreen');
       fullscreenCam = camId;
     }
+    // Re-size canvases after layout change
+    requestAnimationFrame(resizeAllCanvases);
   }
 
-  // ESC to exit fullscreen
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && fullscreenCam !== null) {
       const tile = document.getElementById('cam-' + fullscreenCam);
       if (tile) tile.classList.remove('fullscreen');
       fullscreenCam = null;
+      requestAnimationFrame(resizeAllCanvases);
     }
   });
 
-  // --- Alerts ---
+  // =========================================================================
+  // AI Toggle Controls
+  // =========================================================================
+
+  function toggleMasterAI() {
+    aiMasterEnabled = !aiMasterEnabled;
+    const btn = document.getElementById('ai-master-toggle');
+    btn.textContent = aiMasterEnabled ? 'AI ON' : 'AI OFF';
+    btn.classList.toggle('active', aiMasterEnabled);
+
+    // Toggle all cameras
+    cameras.forEach((cam) => {
+      aiPerCamera[cam.id] = aiMasterEnabled;
+      const camBtn = document.getElementById('ai-btn-' + cam.id);
+      if (camBtn) camBtn.classList.toggle('active', aiMasterEnabled);
+    });
+
+    if (aiMasterEnabled) {
+      startDetectionLoop();
+    } else {
+      stopDetectionLoop();
+      // Clear all canvases
+      cameras.forEach((cam) => {
+        const canvas = document.getElementById('canvas-' + cam.id);
+        if (canvas) {
+          const ctx = canvas.getContext('2d');
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        cameraDetections[cam.id] = null;
+      });
+    }
+  }
+
+  function toggleCameraAI(camId) {
+    aiPerCamera[camId] = !aiPerCamera[camId];
+    const btn = document.getElementById('ai-btn-' + camId);
+    if (btn) btn.classList.toggle('active', aiPerCamera[camId]);
+
+    if (!aiPerCamera[camId]) {
+      const canvas = document.getElementById('canvas-' + camId);
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      cameraDetections[camId] = null;
+    }
+
+    // Check if any camera has AI on
+    const anyOn = Object.values(aiPerCamera).some(v => v);
+    const masterBtn = document.getElementById('ai-master-toggle');
+    if (anyOn && !aiMasterEnabled) {
+      aiMasterEnabled = true;
+      masterBtn.textContent = 'AI ON';
+      masterBtn.classList.add('active');
+      startDetectionLoop();
+    } else if (!anyOn && aiMasterEnabled) {
+      aiMasterEnabled = false;
+      masterBtn.textContent = 'AI OFF';
+      masterBtn.classList.remove('active');
+      stopDetectionLoop();
+    }
+  }
+
+  async function startDetectionLoop() {
+    try {
+      await fetch('/api/detect/start', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+    } catch (e) {
+      console.error('Failed to start detection loop:', e);
+    }
+  }
+
+  async function stopDetectionLoop() {
+    try {
+      await fetch('/api/detect/stop', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+    } catch (e) {
+      console.error('Failed to stop detection loop:', e);
+    }
+  }
+
+  // =========================================================================
+  // Canvas Overlay Rendering
+  // =========================================================================
+
+  function resizeAllCanvases() {
+    cameras.forEach((cam) => {
+      const canvas = document.getElementById('canvas-' + cam.id);
+      const tile = document.getElementById('cam-' + cam.id);
+      if (canvas && tile) {
+        canvas.width = tile.clientWidth;
+        canvas.height = tile.clientHeight;
+      }
+    });
+  }
+
+  // Observe tile size changes
+  const resizeObserver = new ResizeObserver(() => {
+    resizeAllCanvases();
+  });
+
+  function startOverlayRenderLoop() {
+    resizeAllCanvases();
+    // Observe the grid for resize
+    const grid = document.getElementById('camera-grid');
+    if (grid) resizeObserver.observe(grid);
+
+    function renderFrame() {
+      cameras.forEach((cam) => {
+        if (!aiPerCamera[cam.id]) return;
+        const data = cameraDetections[cam.id];
+        if (!data || !data.objects) return;
+        renderDetectionOverlay(cam.id, data.objects, cam.id === fullscreenCam);
+      });
+      animFrameId = requestAnimationFrame(renderFrame);
+    }
+    animFrameId = requestAnimationFrame(renderFrame);
+  }
+
+  function renderDetectionOverlay(camId, objects, isFullscreen) {
+    const canvas = document.getElementById('canvas-' + camId);
+    if (!canvas) return;
+
+    const tile = document.getElementById('cam-' + camId);
+    if (!tile) return;
+
+    // Ensure canvas matches tile size
+    if (canvas.width !== tile.clientWidth || canvas.height !== tile.clientHeight) {
+      canvas.width = tile.clientWidth;
+      canvas.height = tile.clientHeight;
+    }
+
+    const ctx = canvas.getContext('2d');
+    const cw = canvas.width;
+    const ch = canvas.height;
+    ctx.clearRect(0, 0, cw, ch);
+
+    if (!objects || objects.length === 0) return;
+
+    // Get the img element to determine the actual rendered area
+    const img = document.getElementById('feed-' + camId);
+    let offsetX = 0, offsetY = 0, renderW = cw, renderH = ch;
+
+    if (img && img.naturalWidth && img.naturalHeight) {
+      // object-fit: cover calculation
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const tileAspect = cw / ch;
+      if (imgAspect > tileAspect) {
+        renderH = ch;
+        renderW = ch * imgAspect;
+        offsetX = (cw - renderW) / 2;
+      } else {
+        renderW = cw;
+        renderH = cw / imgAspect;
+        offsetY = (ch - renderH) / 2;
+      }
+    }
+
+    objects.forEach((obj) => {
+      const color = CLASS_COLORS[obj.class] || '#00ff41';
+      const conf = (obj.confidence * 100).toFixed(0);
+
+      // Convert normalized center coords to pixel coords on the rendered image
+      // x, y are center; w, h are dimensions (all normalized 0-1)
+      const cx = offsetX + obj.x * renderW;
+      const cy = offsetY + obj.y * renderH;
+      const bw = obj.w * renderW;
+      const bh = obj.h * renderH;
+      const bx = cx - bw / 2;
+      const by = cy - bh / 2;
+
+      // --- Trail (trajectory) ---
+      if (obj.trail && obj.trail.length > 1) {
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.6;
+        for (let i = 0; i < obj.trail.length; i++) {
+          const tx = offsetX + obj.trail[i][0] * renderW;
+          const ty = offsetY + obj.trail[i][1] * renderH;
+          if (i === 0) ctx.moveTo(tx, ty);
+          else ctx.lineTo(tx, ty);
+        }
+        ctx.stroke();
+        ctx.globalAlpha = 1.0;
+
+        // Trail dots
+        obj.trail.forEach((pt, idx) => {
+          const alpha = 0.3 + 0.7 * (idx / obj.trail.length);
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.globalAlpha = alpha;
+          ctx.arc(offsetX + pt[0] * renderW, offsetY + pt[1] * renderH, 2, 0, Math.PI * 2);
+          ctx.fill();
+        });
+        ctx.globalAlpha = 1.0;
+      }
+
+      // --- Bounding box (dashed) ---
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.setLineDash([]);
+
+      // --- Label above box ---
+      const label = `${obj.class} ${conf}%`;
+      ctx.font = '10px Courier New, monospace';
+      const metrics = ctx.measureText(label);
+      const labelW = metrics.width + 6;
+      const labelH = 14;
+      const labelX = bx;
+      const labelY = by - labelH - 1;
+
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.2;
+      ctx.fillRect(labelX, labelY, labelW, labelH);
+      ctx.globalAlpha = 1.0;
+      ctx.fillStyle = color;
+      ctx.fillText(label, labelX + 3, labelY + 10);
+
+      // --- Intent label (if available and not "unknown") ---
+      if (obj.intent && obj.intent !== 'unknown') {
+        const intentLabel = obj.intent.replace(/_/g, ' ');
+        ctx.font = '9px Courier New, monospace';
+        const iMetrics = ctx.measureText(intentLabel);
+        const ix = bx;
+        const iy = by + bh + 12;
+
+        ctx.fillStyle = '#000000';
+        ctx.globalAlpha = 0.5;
+        ctx.fillRect(ix - 1, iy - 9, iMetrics.width + 4, 11);
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = '#ffb800';
+        ctx.fillText(intentLabel, ix + 1, iy);
+      }
+
+      // --- Duration label ---
+      if (obj.duration_s && obj.duration_s > 1) {
+        const durLabel = obj.duration_s.toFixed(1) + 's';
+        ctx.font = '8px Courier New, monospace';
+        ctx.fillStyle = '#aaaaaa';
+        ctx.fillText(durLabel, bx + bw + 3, by + 10);
+      }
+
+      // --- Fullscreen: trajectory prediction arrow ---
+      if (isFullscreen && obj.trail && obj.trail.length >= 3) {
+        const last = obj.trail[obj.trail.length - 1];
+        const prev = obj.trail[obj.trail.length - 3];
+        const vx = (last[0] - prev[0]) / 2;
+        const vy = (last[1] - prev[1]) / 2;
+
+        // Predict 2 seconds ahead (~10 frames at 5fps)
+        const predSteps = 10;
+        const predX = offsetX + (last[0] + vx * predSteps) * renderW;
+        const predY = offsetY + (last[1] + vy * predSteps) * renderH;
+        const fromX = offsetX + last[0] * renderW;
+        const fromY = offsetY + last[1] * renderH;
+
+        // Draw prediction arrow
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.4;
+        ctx.setLineDash([3, 3]);
+        ctx.moveTo(fromX, fromY);
+        ctx.lineTo(predX, predY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Arrow head
+        const angle = Math.atan2(predY - fromY, predX - fromX);
+        const headLen = 8;
+        ctx.beginPath();
+        ctx.moveTo(predX, predY);
+        ctx.lineTo(
+          predX - headLen * Math.cos(angle - 0.4),
+          predY - headLen * Math.sin(angle - 0.4)
+        );
+        ctx.moveTo(predX, predY);
+        ctx.lineTo(
+          predX - headLen * Math.cos(angle + 0.4),
+          predY - headLen * Math.sin(angle + 0.4)
+        );
+        ctx.stroke();
+        ctx.globalAlpha = 1.0;
+      }
+
+      // --- Fullscreen: track ID label ---
+      if (isFullscreen && obj.track_id !== undefined) {
+        ctx.font = '8px Courier New, monospace';
+        ctx.fillStyle = '#555555';
+        ctx.fillText('T' + obj.track_id, bx, by - labelH - 4);
+      }
+    });
+
+    // --- Fullscreen: ROI zone boundary (thin green dashed line around edges) ---
+    if (isFullscreen) {
+      const margin = 0.05;
+      const rx = offsetX + margin * renderW;
+      const ry = offsetY + margin * renderH;
+      const rw = (1 - 2 * margin) * renderW;
+      const rh = (1 - 2 * margin) * renderH;
+
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = '#00ff41';
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.25;
+      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1.0;
+
+      // ROI label
+      ctx.font = '8px Courier New, monospace';
+      ctx.fillStyle = '#00ff41';
+      ctx.globalAlpha = 0.3;
+      ctx.fillText('ROI', rx + 3, ry + 10);
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  // =========================================================================
+  // Alerts
+  // =========================================================================
 
   function renderAlerts() {
     const list = document.getElementById('alert-list');
@@ -843,8 +1270,8 @@
       item.className = 'alert-item';
       const time = evt.timestamp ? evt.timestamp.split('T')[1]?.substring(0, 8) || evt.timestamp : '--';
       item.innerHTML = `
-        <div class="alert-cam">${evt.camera_name}</div>
-        <div class="alert-obj">${evt.object_label}</div>
+        <div class="alert-cam">${evt.camera_name || ''}</div>
+        <div class="alert-obj">${evt.object_label || ''}</div>
         <span class="alert-conf">${(evt.confidence * 100).toFixed(0)}%</span>
         <span class="alert-time">${time}</span>
       `;
@@ -852,22 +1279,37 @@
     });
   }
 
-  function addEvent(evt) {
-    events.unshift(evt);
-    if (events.length > 200) events.pop();
-    detectionCount++;
+  function addDetectionEvents(data) {
+    if (!data.objects || data.objects.length === 0) return;
+
+    data.objects.forEach((obj) => {
+      const evt = {
+        id: 'det-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4),
+        camera_id: data.camera_id,
+        camera_name: data.camera_name || 'Camera ' + data.camera_id,
+        timestamp: data.timestamp,
+        object_label: obj.class,
+        confidence: obj.confidence,
+        bbox: [obj.x, obj.y, obj.w, obj.h],
+      };
+      events.unshift(evt);
+    });
+
+    if (events.length > 200) events.length = 200;
+    detectionCount += data.objects.length;
     renderAlerts();
     document.getElementById('stat-detections').textContent = detectionCount;
 
     // Update camera detection count
-    const countEl = document.getElementById('det-count-' + evt.camera_id);
+    const countEl = document.getElementById('det-count-' + data.camera_id);
     if (countEl) {
-      const camEvents = events.filter(e => e.camera_id === evt.camera_id);
-      countEl.textContent = camEvents.length + ' objects';
+      countEl.textContent = data.objects.length + ' objects';
     }
   }
 
-  // --- WebSocket ---
+  // =========================================================================
+  // WebSocket
+  // =========================================================================
 
   function connectWebSocket() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -883,7 +1325,13 @@
         if (data.type === 'connected') {
           console.log('WebSocket connected, cameras:', data.cameras);
         } else if (data.type === 'detection') {
-          addEvent(data);
+          // Store detection data for canvas rendering
+          cameraDetections[data.camera_id] = {
+            objects: data.objects || [],
+            timestamp: data.timestamp,
+          };
+          // Add to events panel
+          addDetectionEvents(data);
         } else if (data.type === 'frame') {
           updateCameraFrame(data.camera_id, data.image);
         }
@@ -913,14 +1361,15 @@
       img.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:1;';
       tile.appendChild(img);
 
-      // Remove no-signal text
       const ns = tile.querySelector('.no-signal');
       if (ns) ns.style.display = 'none';
     }
     img.src = 'data:image/jpeg;base64,' + base64Image;
   }
 
-  // --- Settings ---
+  // =========================================================================
+  // Settings
+  // =========================================================================
 
   async function openSettings() {
     try {
@@ -969,7 +1418,9 @@
     }
   }
 
-  // --- Stats ---
+  // =========================================================================
+  // Stats
+  // =========================================================================
 
   function startUptimeTicker() {
     setInterval(() => {
@@ -982,7 +1433,6 @@
   }
 
   function startStatsTicker() {
-    // Simulated stats for demo - in production these come via WebSocket
     setInterval(() => {
       const cpu = (Math.random() * 30 + 10).toFixed(0);
       const mem = (Math.random() * 20 + 40).toFixed(0);
@@ -1004,6 +1454,9 @@
   document.getElementById('login-user').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('login-pass').focus();
   });
+
+  // Handle window resize
+  window.addEventListener('resize', resizeAllCanvases);
 </script>
 </body>
 </html>
