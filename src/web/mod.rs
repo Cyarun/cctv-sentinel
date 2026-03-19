@@ -303,27 +303,27 @@ pub async fn snapshot_handler(
     dvr.ip, channel
   );
 
-  let client = reqwest::Client::new();
-  match client
-    .get(&url)
-    .basic_auth(&dvr.username, Some(&dvr.password))
-    .timeout(std::time::Duration::from_secs(5))
-    .send()
-    .await
+  // Use ffmpeg to grab snapshot (handles digest auth natively)
+  let output = tokio::process::Command::new("ffmpeg")
+    .args(["-y", "-rtsp_transport", "tcp", "-stimeout", "3000000",
+           "-i", &format!("rtsp://{}:{}@{}:554/Streaming/Channels/{}",
+                          dvr.username, dvr.password, dvr.ip, channel),
+           "-frames:v", "1", "-f", "image2", "-q:v", "5", "pipe:1"])
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .output()
+    .await;
+
+  match output
   {
-    Ok(resp) => {
-      if resp.status().is_success() {
-        match resp.bytes().await {
-          Ok(bytes) => {
-            (
-              StatusCode::OK,
-              [(header::CONTENT_TYPE, "image/jpeg"),
-               (header::CACHE_CONTROL, "no-cache, no-store")],
-              bytes.to_vec(),
-            ).into_response()
-          }
-          Err(_) => StatusCode::BAD_GATEWAY.into_response(),
-        }
+    Ok(out) => {
+      if out.status.success() && !out.stdout.is_empty() {
+        (
+          StatusCode::OK,
+          [(header::CONTENT_TYPE, "image/jpeg"),
+           (header::CACHE_CONTROL, "no-cache, no-store")],
+          out.stdout,
+        ).into_response()
       } else {
         StatusCode::BAD_GATEWAY.into_response()
       }
