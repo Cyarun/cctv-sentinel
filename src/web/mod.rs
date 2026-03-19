@@ -1,7 +1,8 @@
 use axum::{
-  extract::{Json, State, WebSocketUpgrade, ws::{Message, WebSocket}},
-  http::{HeaderMap, StatusCode},
+  extract::{Json, Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
+  http::{HeaderMap, StatusCode, header},
   response::{Html, IntoResponse, Response},
+  body::Body,
 };
 use chrono::Utc;
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey};
@@ -288,4 +289,48 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
 fn auth_check(headers: &HeaderMap, state: &Arc<AppState>) -> Result<Claims, StatusCode> {
   let token = extract_token(headers)?;
   validate_jwt(&token, &state.config.auth.jwt_secret)
+}
+
+// --- Snapshot proxy ---
+
+pub async fn snapshot_handler(
+  Path(channel): Path<u16>,
+  State(state): State<Arc<AppState>>,
+) -> Response {
+  let dvr = &state.config.dvr;
+  let url = format!(
+    "http://{}/ISAPI/Streaming/channels/{}/picture",
+    dvr.ip, channel
+  );
+
+  let client = reqwest::Client::new();
+  match client
+    .get(&url)
+    .basic_auth(&dvr.username, Some(&dvr.password))
+    .timeout(std::time::Duration::from_secs(5))
+    .send()
+    .await
+  {
+    Ok(resp) => {
+      if resp.status().is_success() {
+        match resp.bytes().await {
+          Ok(bytes) => {
+            (
+              StatusCode::OK,
+              [(header::CONTENT_TYPE, "image/jpeg"),
+               (header::CACHE_CONTROL, "no-cache, no-store")],
+              bytes.to_vec(),
+            ).into_response()
+          }
+          Err(_) => StatusCode::BAD_GATEWAY.into_response(),
+        }
+      } else {
+        StatusCode::BAD_GATEWAY.into_response()
+      }
+    }
+    Err(e) => {
+      tracing::error!("Snapshot failed for channel {}: {}", channel, e);
+      StatusCode::BAD_GATEWAY.into_response()
+    }
+  }
 }

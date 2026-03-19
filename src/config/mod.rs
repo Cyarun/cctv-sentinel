@@ -58,17 +58,17 @@ pub struct AuthConfig {
 impl Default for AppConfig {
   fn default() -> Self {
     let cameras = vec![
-      CameraConfig { id: 1,  channel: 101,  name: "Front Gate".into(),       enabled: true },
-      CameraConfig { id: 2,  channel: 201,  name: "Parking Lot".into(),      enabled: true },
-      CameraConfig { id: 3,  channel: 301,  name: "Main Entrance".into(),    enabled: true },
-      CameraConfig { id: 4,  channel: 401,  name: "Lobby".into(),            enabled: true },
-      CameraConfig { id: 5,  channel: 501,  name: "Corridor East".into(),    enabled: true },
-      CameraConfig { id: 6,  channel: 601,  name: "Corridor West".into(),    enabled: true },
-      CameraConfig { id: 7,  channel: 701,  name: "Server Room".into(),      enabled: true },
-      CameraConfig { id: 8,  channel: 801,  name: "Warehouse".into(),        enabled: true },
-      CameraConfig { id: 9,  channel: 901,  name: "Loading Dock".into(),     enabled: true },
-      CameraConfig { id: 10, channel: 1001, name: "Perimeter North".into(),  enabled: true },
-      CameraConfig { id: 11, channel: 1101, name: "Perimeter South".into(),  enabled: true },
+      CameraConfig { id: 1,  channel: 101,  name: "Front Gate 1".into(),      enabled: true },
+      CameraConfig { id: 2,  channel: 201,  name: "Front Gate 2".into(),      enabled: true },
+      CameraConfig { id: 3,  channel: 301,  name: "Compound View".into(),     enabled: true },
+      CameraConfig { id: 4,  channel: 401,  name: "Car Parking".into(),       enabled: true },
+      CameraConfig { id: 5,  channel: 501,  name: "Left Corridor".into(),     enabled: true },
+      CameraConfig { id: 6,  channel: 601,  name: "Lift & Scooter".into(),    enabled: true },
+      CameraConfig { id: 7,  channel: 701,  name: "Lift Area".into(),         enabled: true },
+      CameraConfig { id: 8,  channel: 801,  name: "Right Corridor B".into(),  enabled: true },
+      CameraConfig { id: 9,  channel: 901,  name: "Right Corridor F".into(),  enabled: true },
+      CameraConfig { id: 10, channel: 1001, name: "Family Floor".into(),      enabled: true },
+      CameraConfig { id: 11, channel: 1101, name: "Stairs 1F-2F".into(),      enabled: true },
     ];
 
     Self {

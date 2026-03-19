@@ -771,7 +771,11 @@
         <div class="cam-status">
           <span class="indicator-dot ${cam.enabled ? 'green' : 'red'}"></span>
         </div>
-        <span class="no-signal">${cam.enabled ? 'AWAITING FEED' : 'OFFLINE'}</span>
+        <img class="cam-feed" id="feed-${cam.id}" src="/api/snapshot/${cam.channel}"
+             style="width:100%;height:calc(100% - 50px);object-fit:cover;display:block;"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
+             onload="this.style.display='block';this.nextElementSibling.style.display='none';">
+        <span class="no-signal" style="display:none;">${cam.enabled ? 'AWAITING FEED' : 'OFFLINE'}</span>
         <div class="cam-footer">
           <span class="detection-count" id="det-count-${cam.id}">0 objects</span>
           <span class="cam-time" id="cam-time-${cam.id}">--:--:--</span>
@@ -787,6 +791,16 @@
     // Update camera timestamps
     updateCameraTimes();
     setInterval(updateCameraTimes, 1000);
+
+    // Refresh camera snapshots every 2 seconds
+    setInterval(() => {
+      cameras.forEach((cam) => {
+        const img = document.getElementById('feed-' + cam.id);
+        if (img && cam.enabled) {
+          img.src = '/api/snapshot/' + cam.channel + '?t=' + Date.now();
+        }
+      });
+    }, 2000);
   }
 
   function updateCameraTimes() {

@@ -112,6 +112,8 @@ async fn main() {
       "/api/settings",
       get(web::get_settings_handler).put(web::put_settings_handler),
     )
+    // Camera snapshots
+    .route("/api/snapshot/:channel", get(web::snapshot_handler))
     // WebSocket
     .route("/ws", get(web::ws_handler))
     // Static files
