@@ -286,6 +286,51 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>) {
   }
 }
 
+// --- MJPEG streaming (no browser polling needed) ---
+
+pub async fn mjpeg_handler(
+  Path(channel): Path<u16>,
+  State(state): State<Arc<AppState>>,
+) -> Response {
+  let dvr = state.config.dvr.clone();
+  let boundary = "cctvsentinelframe";
+
+  let stream = async_stream::stream! {
+    loop {
+      let output = tokio::process::Command::new("curl")
+        .args(["-s", "--digest", "-u",
+               &format!("{}:{}", dvr.username, dvr.password),
+               "-m", "5",
+               &format!("http://{}/ISAPI/Streaming/channels/{}/picture", dvr.ip, channel)])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+
+      if let Ok(out) = output {
+        if out.status.success() && out.stdout.len() > 1000 {
+          let frame = format!(
+            "--{}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+            boundary, out.stdout.len()
+          );
+          yield Ok::<_, std::io::Error>(bytes::Bytes::from(frame));
+          yield Ok(bytes::Bytes::from(out.stdout));
+          yield Ok(bytes::Bytes::from("\r\n"));
+        }
+      }
+      tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+  };
+
+  let body = Body::from_stream(stream);
+  Response::builder()
+    .status(200)
+    .header(header::CONTENT_TYPE, format!("multipart/x-mixed-replace; boundary={}", boundary))
+    .header(header::CACHE_CONTROL, "no-cache, no-store")
+    .body(body)
+    .unwrap()
+}
+
 fn auth_check(headers: &HeaderMap, state: &Arc<AppState>) -> Result<Claims, StatusCode> {
   let token = extract_token(headers)?;
   validate_jwt(&token, &state.config.auth.jwt_secret)

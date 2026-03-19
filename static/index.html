@@ -771,7 +771,7 @@
         <div class="cam-status">
           <span class="indicator-dot ${cam.enabled ? 'green' : 'red'}"></span>
         </div>
-        <img class="cam-feed" id="feed-${cam.id}" src="/api/snapshot/${cam.channel}"
+        <img class="cam-feed" id="feed-${cam.id}" src="/api/mjpeg/${cam.channel}"
              style="width:100%;height:calc(100% - 50px);object-fit:cover;display:block;"
              onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
              onload="this.style.display='block';this.nextElementSibling.style.display='none';">
@@ -792,19 +792,7 @@
     updateCameraTimes();
     setInterval(updateCameraTimes, 1000);
 
-    // Refresh camera snapshots with double-buffering (no flicker)
-    setInterval(() => {
-      cameras.forEach((cam) => {
-        if (!cam.enabled) return;
-        const visible = document.getElementById('feed-' + cam.id);
-        if (!visible) return;
-        const loader = new Image();
-        loader.onload = function() {
-          visible.src = this.src;
-        };
-        loader.src = '/api/snapshot/' + cam.channel + '?t=' + Date.now();
-      });
-    }, 2000);
+    // MJPEG streams — no polling needed, browser handles natively
   }
 
   function updateCameraTimes() {

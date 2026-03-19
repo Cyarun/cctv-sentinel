@@ -38,6 +38,10 @@ uuid = { version = "1", features = ["v4"] }
 # Config
 toml = "0.8"
 
+# Streaming
+async-stream = "0.3"
+bytes = "1"
+
 # Error handling
 anyhow = "1"
 thiserror = "1"
