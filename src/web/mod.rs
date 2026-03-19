@@ -295,11 +295,10 @@ pub async fn mjpeg_handler(
   let dvr = state.config.dvr.clone();
   let boundary = "cctvsentinelframe";
 
-  // Use ffmpeg to continuously decode RTSP sub-stream to MJPEG frames
-  let sub_channel = channel + 1; // sub-stream
+  // Use ffmpeg to continuously decode RTSP main stream to MJPEG frames
   let rtsp_url = format!(
     "rtsp://{}:{}@{}:554/Streaming/Channels/{}",
-    dvr.username, dvr.password, dvr.ip, sub_channel
+    dvr.username, dvr.password, dvr.ip, channel
   );
 
   let stream = async_stream::stream! {
@@ -307,7 +306,7 @@ pub async fn mjpeg_handler(
     let mut child = match tokio::process::Command::new("ffmpeg")
       .args(["-rtsp_transport", "tcp", "-stimeout", "5000000",
              "-i", &rtsp_url,
-             "-vf", "fps=8",
+             "-vf", "fps=5,scale=480:-1",
              "-f", "image2pipe", "-vcodec", "mjpeg",
              "-q:v", "5",
              "-"])
