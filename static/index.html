@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CCTV Sentinel - Surveillance HUD</title>
+<style>
+  :root {
+    --bg-primary: #0a0a0a;
+    --bg-secondary: #111111;
+    --bg-panel: #0d0d0d;
+    --border: #1a3a1a;
+    --border-active: #2d5a2d;
+    --green: #00ff41;
+    --green-dim: #00aa2a;
+    --green-dark: #003d10;
+    --amber: #ffb800;
+    --red: #ff2d2d;
+    --red-dim: #aa1a1a;
+    --text: #b0b0b0;
+    --text-bright: #e0e0e0;
+    --text-dim: #555555;
+    --mono: 'Courier New', 'Consolas', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: var(--mono);
+    background: var(--bg-primary);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* --- Login Screen --- */
+  #login-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    background: radial-gradient(ellipse at center, #0a1a0a 0%, #000000 70%);
+  }
+
+  #login-screen.hidden { display: none; }
+
+  .login-box {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    padding: 40px;
+    width: 380px;
+    text-align: center;
+  }
+
+  .login-box h1 {
+    font-size: 14px;
+    color: var(--green);
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .login-box .subtitle {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 3px;
+    margin-bottom: 30px;
+  }
+
+  .login-box input {
+    width: 100%;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--green);
+    font-family: var(--mono);
+    font-size: 13px;
+    outline: none;
+  }
+
+  .login-box input:focus {
+    border-color: var(--green-dim);
+  }
+
+  .login-box input::placeholder {
+    color: var(--text-dim);
+  }
+
+  .login-box button {
+    width: 100%;
+    padding: 10px;
+    background: var(--green-dark);
+    border: 1px solid var(--green-dim);
+    color: var(--green);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+
+  .login-box button:hover {
+    background: var(--border-active);
+  }
+
+  .login-error {
+    color: var(--red);
+    font-size: 11px;
+    margin-top: 10px;
+    min-height: 16px;
+  }
+
+  /* --- Dashboard --- */
+  #dashboard {
+    display: none;
+    height: 100vh;
+    flex-direction: column;
+  }
+
+  #dashboard.active {
+    display: flex;
+  }
+
+  /* Top Bar */
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    height: 36px;
+    flex-shrink: 0;
+  }
+
+  .top-bar .brand {
+    font-size: 11px;
+    color: var(--green);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+  }
+
+  .top-bar .status-indicators {
+    display: flex;
+    gap: 16px;
+    font-size: 10px;
+  }
+
+  .top-bar .status-indicators span {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .indicator-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .indicator-dot.green { background: var(--green); box-shadow: 0 0 4px var(--green); }
+  .indicator-dot.amber { background: var(--amber); box-shadow: 0 0 4px var(--amber); }
+  .indicator-dot.red { background: var(--red); box-shadow: 0 0 4px var(--red); }
+
+  .top-bar .controls {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .top-bar .controls button {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+
+  .top-bar .controls button:hover {
+    border-color: var(--green-dim);
+    color: var(--green);
+  }
+
+  /* Main Content */
+  .main-content {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Camera Grid */
+  .camera-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(3, 1fr);
+    gap: 2px;
+    padding: 2px;
+    overflow: hidden;
+  }
+
+  .camera-tile {
+    position: relative;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    overflow: hidden;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .camera-tile:hover {
+    border-color: var(--green-dim);
+  }
+
+  .camera-tile.fullscreen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    border: 2px solid var(--green);
+  }
+
+  .camera-tile .cam-header {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 8px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, transparent 100%);
+    z-index: 2;
+  }
+
+  .camera-tile .cam-name {
+    font-size: 10px;
+    color: var(--green);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .camera-tile .cam-channel {
+    font-size: 9px;
+    color: var(--text-dim);
+  }
+
+  .camera-tile .cam-status {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    z-index: 2;
+  }
+
+  .camera-tile .no-signal {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+  }
+
+  .camera-tile .cam-footer {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 4px 8px;
+    background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 100%);
+    z-index: 2;
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+  }
+
+  .camera-tile .detection-count {
+    color: var(--amber);
+  }
+
+  .camera-tile .cam-time {
+    color: var(--text-dim);
+  }
+
+  /* Detection overlay */
+  .detection-box {
+    position: absolute;
+    border: 1px solid var(--green);
+    z-index: 3;
+    pointer-events: none;
+  }
+
+  .detection-label {
+    position: absolute;
+    top: -16px;
+    left: 0;
+    background: rgba(0, 255, 65, 0.15);
+    color: var(--green);
+    font-size: 8px;
+    padding: 1px 4px;
+    white-space: nowrap;
+  }
+
+  /* Alert Panel */
+  .alert-panel {
+    width: 280px;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+
+  .alert-header {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    color: var(--amber);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .alert-count {
+    background: var(--red-dim);
+    color: #fff;
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 2px;
+  }
+
+  .alert-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px;
+  }
+
+  .alert-item {
+    padding: 8px;
+    border-bottom: 1px solid #1a1a1a;
+    font-size: 10px;
+  }
+
+  .alert-item:hover {
+    background: rgba(0, 255, 65, 0.03);
+  }
+
+  .alert-item .alert-cam {
+    color: var(--green);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .alert-item .alert-obj {
+    color: var(--text-bright);
+    margin: 2px 0;
+  }
+
+  .alert-item .alert-conf {
+    color: var(--amber);
+    font-size: 9px;
+  }
+
+  .alert-item .alert-time {
+    color: var(--text-dim);
+    font-size: 9px;
+    float: right;
+  }
+
+  /* Status Bar */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 16px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    height: 28px;
+    flex-shrink: 0;
+    font-size: 10px;
+  }
+
+  .status-bar .stat {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .status-bar .stat-label {
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .status-bar .stat-value {
+    color: var(--green);
+  }
+
+  .status-bar .stat-value.warning {
+    color: var(--amber);
+  }
+
+  .status-bar .stat-value.critical {
+    color: var(--red);
+  }
+
+  /* Settings Modal */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.85);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .modal-overlay.active {
+    display: flex;
+  }
+
+  .modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    padding: 24px;
+    width: 440px;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+
+  .modal h2 {
+    font-size: 12px;
+    color: var(--green);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+  }
+
+  .modal label {
+    display: block;
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+    margin-top: 12px;
+  }
+
+  .modal input, .modal select {
+    width: 100%;
+    padding: 8px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    color: var(--text-bright);
+    font-family: var(--mono);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .modal input:focus {
+    border-color: var(--green-dim);
+  }
+
+  .modal .btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 20px;
+  }
+
+  .modal button {
+    flex: 1;
+    padding: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border: 1px solid var(--border);
+  }
+
+  .modal .btn-save {
+    background: var(--green-dark);
+    color: var(--green);
+    border-color: var(--green-dim);
+  }
+
+  .modal .btn-cancel {
+    background: var(--bg-primary);
+    color: var(--text-dim);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg-primary); }
+  ::-webkit-scrollbar-thumb { background: var(--border); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--green-dim); }
+
+  /* Responsive */
+  @media (max-width: 1024px) {
+    .camera-grid {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .alert-panel { width: 220px; }
+  }
+
+  @media (max-width: 768px) {
+    .camera-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .alert-panel {
+      display: none;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .camera-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Scanline effect */
+  .scanline {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    pointer-events: none;
+    z-index: 999;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.03) 2px,
+      rgba(0, 0, 0, 0.03) 4px
+    );
+  }
+
+  /* Recording indicator blink */
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .rec-indicator {
+    animation: blink 1.5s infinite;
+    color: var(--red);
+    font-size: 9px;
+    letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen">
+  <div class="login-box">
+    <h1>CCTV Sentinel</h1>
+    <div class="subtitle">Surveillance Command Interface</div>
+    <input type="text" id="login-user" placeholder="USERNAME" autocomplete="off">
+    <input type="password" id="login-pass" placeholder="PASSWORD">
+    <button onclick="doLogin()">Authenticate</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dashboard">
+  <!-- Top Bar -->
+  <div class="top-bar">
+    <span class="brand">CCTV Sentinel</span>
+    <div class="status-indicators">
+      <span><span class="indicator-dot green" id="ws-indicator"></span> LIVE FEED</span>
+      <span><span class="indicator-dot green"></span> DVR LINK</span>
+      <span class="rec-indicator">&#x25CF; REC</span>
+    </div>
+    <div class="controls">
+      <button onclick="openSettings()">&#x2699; CONFIG</button>
+      <button onclick="doLogout()">LOGOUT</button>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main-content">
+    <!-- Camera Grid -->
+    <div class="camera-grid" id="camera-grid"></div>
+
+    <!-- Alert Panel -->
+    <div class="alert-panel">
+      <div class="alert-header">
+        <span>Events</span>
+        <span class="alert-count" id="alert-count">0</span>
+      </div>
+      <div class="alert-list" id="alert-list"></div>
+    </div>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <div class="stat">
+      <span class="stat-label">CPU</span>
+      <span class="stat-value" id="stat-cpu">--</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">MEM</span>
+      <span class="stat-value" id="stat-mem">--</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Cameras</span>
+      <span class="stat-value" id="stat-cameras">0/11</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Detections</span>
+      <span class="stat-value" id="stat-detections">0</span>
+    </div>
+    <div class="stat">
+      <span class="stat-label">Uptime</span>
+      <span class="stat-value" id="stat-uptime">00:00:00</span>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <h2>System Configuration</h2>
+    <label>DVR IP Address</label>
+    <input type="text" id="cfg-dvr-ip" placeholder="192.168.1.15">
+    <label>DVR Username</label>
+    <input type="text" id="cfg-dvr-user" placeholder="admin">
+    <label>DVR Password</label>
+    <input type="password" id="cfg-dvr-pass" placeholder="password">
+    <label>Telegram Bot Token</label>
+    <input type="text" id="cfg-tg-token" placeholder="bot token">
+    <label>Confidence Threshold</label>
+    <input type="number" id="cfg-confidence" min="0.1" max="1.0" step="0.05" value="0.45">
+    <label>Capture Interval (seconds)</label>
+    <input type="number" id="cfg-interval" min="1" max="60" value="5">
+    <div class="btn-row">
+      <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
+      <button class="btn-save" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Scanline overlay -->
+<div class="scanline"></div>
+
+<script>
+  // State
+  let token = localStorage.getItem('sentinel_token') || '';
+  let ws = null;
+  let cameras = [];
+  let events = [];
+  let detectionCount = 0;
+  let startTime = Date.now();
+  let fullscreenCam = null;
+
+  // Boot
+  if (token) {
+    showDashboard();
+  }
+
+  // --- Auth ---
+
+  async function doLogin() {
+    const user = document.getElementById('login-user').value;
+    const pass = document.getElementById('login-pass').value;
+    const errEl = document.getElementById('login-error');
+    errEl.textContent = '';
+
+    try {
+      const res = await fetch('/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user, password: pass }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        errEl.textContent = data.error || 'Authentication failed';
+        return;
+      }
+
+      const data = await res.json();
+      token = data.token;
+      localStorage.setItem('sentinel_token', token);
+      showDashboard();
+    } catch (e) {
+      errEl.textContent = 'Connection failed';
+    }
+  }
+
+  function doLogout() {
+    token = '';
+    localStorage.removeItem('sentinel_token');
+    if (ws) ws.close();
+    document.getElementById('dashboard').classList.remove('active');
+    document.getElementById('login-screen').classList.remove('hidden');
+  }
+
+  // --- Dashboard ---
+
+  async function showDashboard() {
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('dashboard').classList.add('active');
+    startTime = Date.now();
+
+    await loadCameras();
+    await loadEvents();
+    connectWebSocket();
+    startUptimeTicker();
+    startStatsTicker();
+  }
+
+  async function loadCameras() {
+    try {
+      const res = await fetch('/api/cameras', {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      if (res.status === 401) { doLogout(); return; }
+      cameras = await res.json();
+      renderCameraGrid();
+    } catch (e) {
+      console.error('Failed to load cameras:', e);
+    }
+  }
+
+  async function loadEvents() {
+    try {
+      const res = await fetch('/api/events', {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      if (res.status === 401) return;
+      events = await res.json();
+      detectionCount = events.length;
+      renderAlerts();
+      document.getElementById('stat-detections').textContent = detectionCount;
+    } catch (e) {
+      console.error('Failed to load events:', e);
+    }
+  }
+
+  function renderCameraGrid() {
+    const grid = document.getElementById('camera-grid');
+    grid.innerHTML = '';
+
+    cameras.forEach((cam) => {
+      const tile = document.createElement('div');
+      tile.className = 'camera-tile';
+      tile.id = 'cam-' + cam.id;
+      tile.onclick = () => toggleFullscreen(cam.id);
+
+      tile.innerHTML = `
+        <div class="cam-header">
+          <span class="cam-name">${cam.name}</span>
+          <span class="cam-channel">CH${cam.channel}</span>
+        </div>
+        <div class="cam-status">
+          <span class="indicator-dot ${cam.enabled ? 'green' : 'red'}"></span>
+        </div>
+        <span class="no-signal">${cam.enabled ? 'AWAITING FEED' : 'OFFLINE'}</span>
+        <div class="cam-footer">
+          <span class="detection-count" id="det-count-${cam.id}">0 objects</span>
+          <span class="cam-time" id="cam-time-${cam.id}">--:--:--</span>
+        </div>
+      `;
+
+      grid.appendChild(tile);
+    });
+
+    document.getElementById('stat-cameras').textContent =
+      cameras.filter(c => c.enabled).length + '/' + cameras.length;
+
+    // Update camera timestamps
+    updateCameraTimes();
+    setInterval(updateCameraTimes, 1000);
+  }
+
+  function updateCameraTimes() {
+    const now = new Date();
+    const ts = now.toTimeString().split(' ')[0];
+    cameras.forEach((cam) => {
+      const el = document.getElementById('cam-time-' + cam.id);
+      if (el) el.textContent = ts;
+    });
+  }
+
+  function toggleFullscreen(camId) {
+    const tile = document.getElementById('cam-' + camId);
+    if (!tile) return;
+
+    if (fullscreenCam === camId) {
+      tile.classList.remove('fullscreen');
+      fullscreenCam = null;
+    } else {
+      // Remove existing fullscreen
+      if (fullscreenCam !== null) {
+        const prev = document.getElementById('cam-' + fullscreenCam);
+        if (prev) prev.classList.remove('fullscreen');
+      }
+      tile.classList.add('fullscreen');
+      fullscreenCam = camId;
+    }
+  }
+
+  // ESC to exit fullscreen
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && fullscreenCam !== null) {
+      const tile = document.getElementById('cam-' + fullscreenCam);
+      if (tile) tile.classList.remove('fullscreen');
+      fullscreenCam = null;
+    }
+  });
+
+  // --- Alerts ---
+
+  function renderAlerts() {
+    const list = document.getElementById('alert-list');
+    list.innerHTML = '';
+    document.getElementById('alert-count').textContent = events.length;
+
+    events.slice(0, 50).forEach((evt) => {
+      const item = document.createElement('div');
+      item.className = 'alert-item';
+      const time = evt.timestamp ? evt.timestamp.split('T')[1]?.substring(0, 8) || evt.timestamp : '--';
+      item.innerHTML = `
+        <div class="alert-cam">${evt.camera_name}</div>
+        <div class="alert-obj">${evt.object_label}</div>
+        <span class="alert-conf">${(evt.confidence * 100).toFixed(0)}%</span>
+        <span class="alert-time">${time}</span>
+      `;
+      list.appendChild(item);
+    });
+  }
+
+  function addEvent(evt) {
+    events.unshift(evt);
+    if (events.length > 200) events.pop();
+    detectionCount++;
+    renderAlerts();
+    document.getElementById('stat-detections').textContent = detectionCount;
+
+    // Update camera detection count
+    const countEl = document.getElementById('det-count-' + evt.camera_id);
+    if (countEl) {
+      const camEvents = events.filter(e => e.camera_id === evt.camera_id);
+      countEl.textContent = camEvents.length + ' objects';
+    }
+  }
+
+  // --- WebSocket ---
+
+  function connectWebSocket() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+    ws.onopen = () => {
+      document.getElementById('ws-indicator').className = 'indicator-dot green';
+    };
+
+    ws.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        if (data.type === 'connected') {
+          console.log('WebSocket connected, cameras:', data.cameras);
+        } else if (data.type === 'detection') {
+          addEvent(data);
+        } else if (data.type === 'frame') {
+          updateCameraFrame(data.camera_id, data.image);
+        }
+      } catch (e) {
+        console.error('WS parse error:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      document.getElementById('ws-indicator').className = 'indicator-dot red';
+      setTimeout(connectWebSocket, 3000);
+    };
+
+    ws.onerror = () => {
+      document.getElementById('ws-indicator').className = 'indicator-dot red';
+    };
+  }
+
+  function updateCameraFrame(camId, base64Image) {
+    const tile = document.getElementById('cam-' + camId);
+    if (!tile) return;
+
+    let img = tile.querySelector('img.cam-feed');
+    if (!img) {
+      img = document.createElement('img');
+      img.className = 'cam-feed';
+      img.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;z-index:1;';
+      tile.appendChild(img);
+
+      // Remove no-signal text
+      const ns = tile.querySelector('.no-signal');
+      if (ns) ns.style.display = 'none';
+    }
+    img.src = 'data:image/jpeg;base64,' + base64Image;
+  }
+
+  // --- Settings ---
+
+  async function openSettings() {
+    try {
+      const res = await fetch('/api/settings', {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      if (res.ok) {
+        const cfg = await res.json();
+        document.getElementById('cfg-dvr-ip').value = cfg.dvr_ip || '';
+        document.getElementById('cfg-dvr-user').value = cfg.dvr_username || '';
+        document.getElementById('cfg-confidence').value = cfg.confidence_threshold || 0.45;
+        document.getElementById('cfg-interval').value = cfg.capture_interval_secs || 5;
+        document.getElementById('cfg-tg-token').value = cfg.telegram_bot_token || '';
+      }
+    } catch (e) {}
+
+    document.getElementById('settings-modal').classList.add('active');
+  }
+
+  function closeSettings() {
+    document.getElementById('settings-modal').classList.remove('active');
+  }
+
+  async function saveSettings() {
+    const payload = {
+      dvr_ip: document.getElementById('cfg-dvr-ip').value,
+      dvr_username: document.getElementById('cfg-dvr-user').value,
+      dvr_password: document.getElementById('cfg-dvr-pass').value || undefined,
+      telegram_bot_token: document.getElementById('cfg-tg-token').value || undefined,
+      confidence_threshold: parseFloat(document.getElementById('cfg-confidence').value),
+      capture_interval_secs: parseInt(document.getElementById('cfg-interval').value),
+    };
+
+    try {
+      await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token,
+        },
+        body: JSON.stringify(payload),
+      });
+      closeSettings();
+    } catch (e) {
+      console.error('Failed to save settings:', e);
+    }
+  }
+
+  // --- Stats ---
+
+  function startUptimeTicker() {
+    setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const h = String(Math.floor(elapsed / 3600)).padStart(2, '0');
+      const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      document.getElementById('stat-uptime').textContent = h + ':' + m + ':' + s;
+    }, 1000);
+  }
+
+  function startStatsTicker() {
+    // Simulated stats for demo - in production these come via WebSocket
+    setInterval(() => {
+      const cpu = (Math.random() * 30 + 10).toFixed(0);
+      const mem = (Math.random() * 20 + 40).toFixed(0);
+      const cpuEl = document.getElementById('stat-cpu');
+      const memEl = document.getElementById('stat-mem');
+
+      cpuEl.textContent = cpu + '%';
+      cpuEl.className = 'stat-value' + (cpu > 80 ? ' critical' : cpu > 60 ? ' warning' : '');
+
+      memEl.textContent = mem + '%';
+      memEl.className = 'stat-value' + (mem > 85 ? ' critical' : mem > 70 ? ' warning' : '');
+    }, 2000);
+  }
+
+  // Enter key on login
+  document.getElementById('login-pass').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') doLogin();
+  });
+  document.getElementById('login-user').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('login-pass').focus();
+  });
+</script>
+</body>
+</html>
